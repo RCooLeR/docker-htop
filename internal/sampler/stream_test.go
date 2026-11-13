@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -12,8 +13,10 @@ import (
 	"github.com/RCooLeR/docker-htop/internal/model"
 )
 
-// lineWriter records what was flushed, so the test sees only complete flushed output.
+// lineWriter records what was flushed, so the test sees only complete flushed output. Stream
+// writes from its own goroutine while the test reads, so every access takes the lock.
 type lineWriter struct {
+	mu      sync.Mutex // guards the fields below
 	pending bytes.Buffer
 	flushed bytes.Buffer
 	flushes int
@@ -22,6 +25,8 @@ type lineWriter struct {
 }
 
 func (w *lineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.writes++
 	if w.writes == w.failAt {
 		return 0, errors.New("broken pipe")
@@ -30,9 +35,18 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 }
 
 func (w *lineWriter) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.flushes++
 	_, err := w.pending.WriteTo(&w.flushed)
 	return err
+}
+
+// state returns the unflushed byte count, the number of flushes and a copy of the flushed output.
+func (w *lineWriter) state() (pending, flushes int, flushed []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.pending.Len(), w.flushes, bytes.Clone(w.flushed.Bytes())
 }
 
 func TestStream(t *testing.T) {
@@ -61,13 +75,13 @@ func TestStream(t *testing.T) {
 
 func checkLines(t *testing.T, w *lineWriter, want int) {
 	t.Helper()
-	if w.pending.Len() != 0 {
-		t.Errorf("%d unflushed bytes", w.pending.Len())
+	pending, flushes, data := w.state()
+	if pending != 0 {
+		t.Errorf("%d unflushed bytes", pending)
 	}
-	if w.flushes != want {
-		t.Errorf("flushes = %d, want %d", w.flushes, want)
+	if flushes != want {
+		t.Errorf("flushes = %d, want %d", flushes, want)
 	}
-	data := w.flushed.Bytes()
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		t.Fatalf("output does not end with a newline: %q", data)
 	}
@@ -90,8 +104,8 @@ func TestStreamWriteFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		w := &lineWriter{failAt: 2}
 		err := Stream(t.Context(), newTestReader(fixtureRoot), w, time.Second)
-		if err == nil || w.flushes != 1 {
-			t.Errorf("Stream = %v after %d flushes, want an error after 1", err, w.flushes)
+		if _, flushes, _ := w.state(); err == nil || flushes != 1 {
+			t.Errorf("Stream = %v after %d flushes, want an error after 1", err, flushes)
 		}
 	})
 }
