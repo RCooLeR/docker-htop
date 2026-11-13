@@ -1,0 +1,11 @@
+Name:	redis-server
+Umask:	0022
+State:	S (sleeping)
+Tgid:	400
+Ngid:	0
+Pid:	400
+PPid:	1
+TracerPid:	0
+Uid:	999	999	999	999
+Gid:	999	999	999	999
+Threads:	4

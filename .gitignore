@@ -1,0 +1,9 @@
+# Build output
+/dist/
+
+# IDE state
+/.idea/
+
+# The sampler binary is compiled by scripts/build.ps1 and embedded; only the placeholder is tracked.
+/internal/samplerbin/bin/*
+!/internal/samplerbin/bin/.gitkeep

@@ -1,0 +1,122 @@
+# Publish only explicitly pushed stable release tags.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: test -z "$(gofmt -s -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        if: runner.os != 'Linux'
+        run: go test ./...
+
+      - name: Test with the race detector
+        if: runner.os == 'Linux'
+        run: go test -race ./...
+
+  release:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a stable SemVer tag on the default branch tip
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release tags must use stable SemVer form vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          tag_commit="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          default_commit="$(git rev-parse "refs/remotes/origin/${DEFAULT_BRANCH}^{commit}")"
+          if [[ "${tag_commit}" != "${default_commit}" ]]; then
+            echo "release tag must point to the current default branch commit" >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: sh scripts/build.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test "$(./dist/linux-amd64/docker-htop --version)" = "docker htop version ${version}"
+
+          mkdir release
+          cp dist/linux-amd64/docker-htop release/docker-htop-linux-amd64
+          cp dist/linux-arm64/docker-htop release/docker-htop-linux-arm64
+          cp dist/windows-amd64/docker-htop.exe release/docker-htop-windows-amd64.exe
+          (cd release && sha256sum docker-htop-* > checksums.txt)
+
+          # The release text is this version's section of the changelog.
+          awk -v version="${version}" '
+            index($0, "## [" version "]") == 1 { found = 1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "CHANGELOG.md has no section for ${version}" >&2
+            exit 1
+          fi
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release/docker-htop-* release/checksums.txt \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md

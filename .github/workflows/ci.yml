@@ -1,0 +1,50 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+env:
+  GOTOOLCHAIN: local
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: test -z "$(gofmt -s -l .)"
+      - run: go vet ./...
+      - name: Test
+        if: runner.os != 'Linux'
+        run: go test ./...
+      - name: Test with the race detector
+        if: runner.os == 'Linux'
+        run: go test -race ./...
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build every target
+        run: sh scripts/build.sh ci
+      - name: Check the built plugin
+        run: |
+          test "$(./dist/linux-amd64/docker-htop --version)" = "docker htop version ci"
+          ./dist/linux-amd64/docker-htop docker-cli-plugin-metadata
+          # The amd64 sampler is embedded now, so this also checks the real binary.
+          go test ./internal/samplerbin/...

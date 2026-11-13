@@ -1,0 +1,11 @@
+Name:	a) b (c
+Umask:	0022
+State:	S (sleeping)
+Tgid:	100
+Ngid:	0
+Pid:	100
+PPid:	1
+TracerPid:	0
+Uid:	1000	1001	1001	1001
+Gid:	1000	1000	1000	1000
+Threads:	3
